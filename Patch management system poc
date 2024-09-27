@@ -1,0 +1,245 @@
+import os
+import subprocess
+import logging
+import sqlite3
+from datetime import datetime
+
+# Logger configuration
+def create_logger(log_file):
+    if not os.path.exists(os.path.dirname(log_file)):
+        os.makedirs(os.path.dirname(log_file))
+    
+    logger = logging.getLogger('PatchManagementLogger')
+    logger.setLevel(logging.INFO)
+
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.INFO)
+
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+
+    if not logger.handlers:
+        logger.addHandler(fh)
+    
+    return logger
+
+# Database setup
+def initialize_db(db_path='patches.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS patches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            status TEXT DEFAULT 'pending',
+            applied_on TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# CRUD Operations
+def create_patch(name, description, db_path='patches.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO patches (name, description)
+        VALUES (?, ?)
+    ''', (name, description))
+    conn.commit()
+    conn.close()
+    print(f"Patch '{name}' created successfully.")
+
+def read_patches(db_path='patches.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM patches')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def update_patch(patch_id, name=None, description=None, status=None, db_path='patches.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    if name:
+        cursor.execute('UPDATE patches SET name = ? WHERE id = ?', (name, patch_id))
+    if description:
+        cursor.execute('UPDATE patches SET description = ? WHERE id = ?', (description, patch_id))
+    if status:
+        cursor.execute('UPDATE patches SET status = ? WHERE id = ?', (status, patch_id))
+    conn.commit()
+    conn.close()
+    print(f"Patch ID '{patch_id}' updated successfully.")
+
+def delete_patch(patch_id, db_path='patches.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM patches WHERE id = ?', (patch_id,))
+    conn.commit()
+    conn.close()
+    print(f"Patch ID '{patch_id}' deleted successfully.")
+
+# Check and install PSWindowsUpdate module
+def install_pswindowsupdate_module(log):
+    try:
+        log.info("Checking if PSWindowsUpdate module is installed...")
+        result = subprocess.run(
+            ['powershell', '-Command', 'Get-Module -ListAvailable -Name PSWindowsUpdate'],
+            stdout=subprocess.PIPE, text=True
+        )
+
+        if "PSWindowsUpdate" not in result.stdout:
+            log.info("PSWindowsUpdate module not found. Installing PSWindowsUpdate module...")
+            subprocess.run(
+                ['powershell', '-Command', 'Install-Module -Name PSWindowsUpdate -Force -Scope CurrentUser'],
+                check=True
+            )
+            log.info("PSWindowsUpdate module installed successfully.")
+        else:
+            log.info("PSWindowsUpdate module already installed.")
+    except subprocess.CalledProcessError as e:
+        log.error(f"Failed to install PSWindowsUpdate module: {e}")
+        raise
+
+# Apply system patches
+def apply_system_patches(patch_id, log, db_path='patches.db'):
+    try:
+        log.info(f"Applying patch ID: {patch_id}")
+        # Fetch patch details from DB
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT name, description FROM patches WHERE id = ?', (patch_id,))
+        patch = cursor.fetchone()
+        conn.close()
+
+        if not patch:
+            log.error(f"No patch found with ID: {patch_id}")
+            print(f"No patch found with ID: {patch_id}")
+            return
+
+        patch_name, patch_description = patch
+        log.info(f"Applying Patch: {patch_name} - {patch_description}")
+
+        # Import PSWindowsUpdate module
+        subprocess.run(['powershell', 'Import-Module PSWindowsUpdate'], check=True)
+        
+        # Install the update (for demonstration, we use Install-WindowsUpdate)
+        log.info("Initiating Windows Update installation via PowerShell...")
+        subprocess.run('powershell Install-WindowsUpdate -AcceptAll -AutoReboot', shell=True, check=True)
+        
+        # Update patch status in DB
+        applied_on = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE patches SET status = ?, applied_on = ? WHERE id = ?', ('applied', applied_on, patch_id))
+        conn.commit()
+        conn.close()
+        log.info(f"Patch ID {patch_id} applied successfully.")
+        print(f"Patch ID {patch_id} applied successfully.")
+    except subprocess.CalledProcessError as e:
+        log.error(f"Failed to apply patch ID {patch_id}: {e}")
+        print(f"Failed to apply patch ID {patch_id}: {e}")
+
+# Monitor patch effects
+def monitor_patch_effects(patch_id, log, db_path='patches.db'):
+    try:
+        log.info(f"Monitoring effects for patch ID: {patch_id}")
+        # Fetch patch details from DB
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT name, applied_on, status FROM patches WHERE id = ?', (patch_id,))
+        patch = cursor.fetchone()
+        conn.close()
+
+        if not patch:
+            log.error(f"No patch found with ID: {patch_id}")
+            print(f"No patch found with ID: {patch_id}")
+            return
+
+        patch_name, applied_on, status = patch
+        log.info(f"Monitoring Patch: {patch_name}, Applied On: {applied_on}, Status: {status}")
+
+        # Placeholder for monitoring logic
+        if status.lower() == 'applied':
+            log.info(f"Patch ID {patch_id} has been applied successfully. No issues detected.")
+            print(f"Patch ID {patch_id} has been applied successfully. No issues detected.")
+        else:
+            log.warning(f"Patch ID {patch_id} status: {status}. Further investigation required.")
+            print(f"Patch ID {patch_id} status: {status}. Further investigation required.")
+    except Exception as e:
+        log.error(f"Error monitoring patch effects for patch ID {patch_id}: {e}")
+        print(f"Error monitoring patch effects for patch ID {patch_id}: {e}")
+
+# Main function to interact with the system
+def run_patch_management_system():
+    # Initialize logger and database
+    log = create_logger('logs/patch_management.log')
+    initialize_db()
+
+    # Ensure PSWindowsUpdate module is installed
+    try:
+        install_pswindowsupdate_module(log)
+    except Exception as e:
+        print("Failed to install PSWindowsUpdate module. Check logs for details.")
+        return
+
+    while True:
+        print("\nPatch Management System")
+        print("-----------------------")
+        print("1. Create Patch Record")
+        print("2. View Patch Records")
+        print("3. Update Patch Record")
+        print("4. Delete Patch Record")
+        print("5. Apply System Patch")
+        print("6. Monitor Patch Effects")
+        print("7. Exit")
+
+        choice = input("Enter your choice (1-7): ").strip()
+
+        if choice == '1':
+            name = input("Enter patch name: ").strip()
+            description = input("Enter patch description: ").strip()
+            create_patch(name, description)
+            log.info(f"Created patch record: {name} - {description}")
+        elif choice == '2':
+            patches = read_patches()
+            if patches:
+                print("\nPatch Records:")
+                print("{:<5} {:<30} {:<50} {:<15} {:<20}".format("ID", "Name", "Description", "Status", "Applied On"))
+                print("-" * 120)
+                for patch in patches:
+                    print("{:<5} {:<30} {:<50} {:<15} {:<20}".format(
+                        patch[0], patch[1], patch[2], patch[3], patch[4] if patch[4] else "N/A"))
+            else:
+                print("No patch records found.")
+        elif choice == '3':
+            patch_id = input("Enter patch ID to update: ").strip()
+            print("Leave fields blank if no change is needed.")
+            name = input("Enter new patch name: ").strip()
+            description = input("Enter new patch description: ").strip()
+            status = input("Enter new status (pending/applied/failed): ").strip()
+            update_patch(patch_id, name=name or None, description=description or None, status=status or None)
+            log.info(f"Updated patch ID {patch_id}")
+        elif choice == '4':
+            patch_id = input("Enter patch ID to delete: ").strip()
+            confirm = input(f"Are you sure you want to delete patch ID {patch_id}? (y/n): ").strip().lower()
+            if confirm == 'y':
+                delete_patch(patch_id)
+                log.info(f"Deleted patch ID {patch_id}")
+            else:
+                print("Deletion cancelled.")
+        elif choice == '5':
+            patch_id = input("Enter patch ID to apply: ").strip()
+            apply_system_patches(patch_id, log)
+        elif choice == '6':
+            patch_id = input("Enter patch ID to monitor: ").strip()
+            monitor_patch_effects(patch_id, log)
+        elif choice == '7':
+            print("Exiting Patch Management System.")
+            break
+        else:
+            print("Invalid choice. Please try again.")
+
+if __name__ == "__main__":
+    run_patch_management_system()
